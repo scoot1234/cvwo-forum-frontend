@@ -12,8 +12,11 @@ export type PostDTO = {
   author?: { id: number; username: string } | null;
 };
 
-export async function listPostsByTopic(topicId: number) {
-  const res = await api.get<PostDTO[]>(`/topics/${topicId}/posts`);
+export async function listPostsByTopic(topicId: number, q?: string) {
+  const trimmed = q?.trim();
+  const res = await api.get<PostDTO[]>(`/topics/${topicId}/posts`, {
+    params: trimmed ? { q: trimmed } : undefined,
+  });
   return res.data;
 }
 

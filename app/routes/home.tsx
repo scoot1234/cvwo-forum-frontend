@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
 import {
   AppBar,
@@ -53,12 +53,14 @@ export default function TopicsHome() {
   useEffect(() => {
     let alive = true;
 
-    async function run() {
+    const handle = setTimeout(async () => {
       try {
         setLoading(true);
         setLoadError(null);
-        const data = await listTopics();
+
+        const data = await listTopics(query);
         if (!alive) return;
+
         setTopics(data);
       } catch (e) {
         if (!alive) return;
@@ -67,19 +69,12 @@ export default function TopicsHome() {
         if (!alive) return;
         setLoading(false);
       }
-    }
-
-    run();
+    }, 250);
     return () => {
       alive = false;
+      clearTimeout(handle);
     };
-  }, []);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return topics;
-    return topics.filter((t) => `${t.title} ${t.description}`.toLowerCase().includes(q));
-  }, [topics, query]);
+  }, [query]);
 
   function onClickNewTopic() {
     if (!user) return navigate("/login");
@@ -103,15 +98,22 @@ export default function TopicsHome() {
       setSaving(true);
       setSaveError(null);
 
-      const created = await createTopic({ title: t, description: d, userId: user.id });
-      setTopics((prev) => [created, ...prev]);
+      await createTopic({ title: t, description: d, userId: user.id });
       setOpen(false);
+
+      setLoading(true);
+      setLoadError(null);
+      const data = await listTopics(query);
+      setTopics(data);
     } catch (e) {
       setSaveError(getApiErrorMessage(e));
     } finally {
       setSaving(false);
+      setLoading(false);
     }
   }
+
+  const isSearching = query.trim().length > 0;
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
@@ -193,12 +195,17 @@ export default function TopicsHome() {
           </Stack>
         </Paper>
 
-        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 4, mb: 1 }}>
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+          sx={{ mt: 4, mb: 1 }}
+        >
           <Typography variant="h6" fontWeight={800}>
             Featured topics
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {filtered.length} topic{filtered.length === 1 ? "" : "s"}
+            {topics.length} topic{topics.length === 1 ? "" : "s"}
           </Typography>
         </Stack>
 
@@ -214,29 +221,38 @@ export default function TopicsHome() {
             <Skeleton variant="rounded" height={72} />
             <Skeleton variant="rounded" height={72} />
           </Stack>
-        ) : filtered.length === 0 ? (
+        ) : topics.length === 0 ? (
           <Paper sx={{ p: 3, borderRadius: 3 }}>
-            <Typography fontWeight={700}>No matches</Typography>
+            <Typography fontWeight={700}>
+              {isSearching ? "No matches" : "No topics yet"}
+            </Typography>
             <Typography variant="body2" color="text.secondary">
-              Try a different keyword.
+              {isSearching ? "Try a different keyword." : "Be the first to create a topic."}
             </Typography>
           </Paper>
         ) : (
           <Stack spacing={2}>
-            {filtered.map((t) => {
+            {topics.map((t) => {
               const hasAuthor = !!t.author?.username;
 
               return (
                 <Paper
                   key={t.id}
-                  sx={{ p: 2.5, borderRadius: 3, cursor: "pointer", "&:hover": { boxShadow: 2 } }}
+                  sx={{
+                    p: 2.5,
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    "&:hover": { boxShadow: 2 },
+                  }}
                   onClick={() => navigate(`/topics/${t.id}`)}
                 >
                   <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
                     <Typography variant="h6" fontWeight={800}>
                       {t.title}
                     </Typography>
-                    {!t.createdByUserId && <Chip size="small" label="Official" variant="outlined" />}
+                    {!t.createdByUserId && (
+                      <Chip size="small" label="Official" variant="outlined" />
+                    )}
                   </Stack>
 
                   <Typography variant="body2" color="text.secondary">
@@ -244,7 +260,11 @@ export default function TopicsHome() {
                   </Typography>
 
                   {hasAuthor ? (
-                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: "block", mt: 1 }}
+                    >
                       by {t.author!.username} • {formatDate(t.createdAt)}
                     </Typography>
                   ) : null}

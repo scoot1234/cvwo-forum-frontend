@@ -10,8 +10,11 @@ export type TopicDTO = {
   author?: { id: number; username: string } | null;
 };
 
-export async function listTopics() {
-  const res = await api.get<TopicDTO[]>("/topics");
+export async function listTopics(q?: string) {
+  const trimmed = q?.trim();
+  const res = await api.get<TopicDTO[]>("/topics", {
+    params: trimmed ? { q: trimmed } : undefined,
+  });
   return res.data;
 }
 

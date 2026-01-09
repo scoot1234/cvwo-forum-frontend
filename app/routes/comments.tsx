@@ -6,7 +6,6 @@ import {
     Box,
     Button,
     Chip,
-    Collapse,
     Container,
     Divider,
     IconButton,
@@ -18,7 +17,6 @@ import {
     Typography,
 } from "@mui/material";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import ReplyIcon from "@mui/icons-material/Reply";
 import LinkIcon from "@mui/icons-material/Link";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 
@@ -32,8 +30,6 @@ import {
     type CommentDTO,
 } from "~/lib/api/comments";
 import { useAuthUser } from "~/lib/hooks/useAuthUser";
-
-type CommentNode = CommentDTO & { children: CommentNode[] };
 
 function fmtDate(s?: string | null) {
     if (!s) return "";
@@ -60,37 +56,10 @@ function canEdit(user: { id: number } | null, ownerUserId: number) {
     return user.id === ownerUserId;
 }
 
-function buildTree(list: CommentDTO[]) {
-    const byId = new Map<number, CommentNode>();
-    const roots: CommentNode[] = [];
-
-    for (const c of list) byId.set(c.id, { ...c, children: [] });
-
-    for (const c of list) {
-        const node = byId.get(c.id)!;
-        const parentId = c.parentCommentId ?? null;
-
-        if (parentId && byId.has(parentId)) byId.get(parentId)!.children.push(node);
-        else roots.push(node);
-    }
-
-    const sortByTime = (a: CommentNode, b: CommentNode) =>
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-
-    const sortDeep = (nodes: CommentNode[]) => {
-        nodes.sort(sortByTime);
-        for (const n of nodes) sortDeep(n.children);
-    };
-
-    sortDeep(roots);
-    return roots;
-}
-
 export default function CommentsRoute() {
     const { postId } = useParams();
     const postIdNum = useMemo(() => Number(postId), [postId]);
     const navigate = useNavigate();
-
     const { mounted, user, logout } = useAuthUser();
 
     const [post, setPost] = useState<PostDTO | null>(null);
@@ -100,10 +69,6 @@ export default function CommentsRoute() {
 
     const [newBody, setNewBody] = useState("");
     const [posting, setPosting] = useState(false);
-
-    const [replyToId, setReplyToId] = useState<number | null>(null);
-    const [replyBody, setReplyBody] = useState("");
-    const [replyPosting, setReplyPosting] = useState(false);
 
     const [editCommentId, setEditCommentId] = useState<number | null>(null);
     const [editCommentBody, setEditCommentBody] = useState("");
@@ -131,8 +96,8 @@ export default function CommentsRoute() {
                 setErr(null);
 
                 const [p, cs] = await Promise.all([getPostById(postIdNum), listCommentsByPost(postIdNum)]);
-
                 if (!alive) return;
+
                 setPost(p);
                 setComments(cs);
                 setEditPostTitle(p.title);
@@ -152,17 +117,8 @@ export default function CommentsRoute() {
         };
     }, [postIdNum]);
 
-    const tree = useMemo(() => buildTree(comments), [comments]);
-
-    function openReply(commentId: number) {
+    async function submitComment() {
         if (!user) return navigate("/login");
-        setReplyToId(commentId);
-        setReplyBody("");
-    }
-
-    async function submitTopLevel() {
-        if (!user) return navigate("/login");
-
         const b = newBody.trim();
         if (!b) return;
 
@@ -178,40 +134,15 @@ export default function CommentsRoute() {
         }
     }
 
-    async function submitReply() {
-        if (!user || !replyToId) return;
-
-        const b = replyBody.trim();
-        if (!b) return;
-
-        try {
-            setReplyPosting(true);
-            const created = await createComment(postIdNum, {
-                userId: user.id,
-                body: b,
-                parentCommentId: replyToId,
-            });
-            setComments((prev) => [...prev, created]);
-            setReplyToId(null);
-            setReplyBody("");
-        } catch (e) {
-            setErr(getApiErrorMessage(e));
-        } finally {
-            setReplyPosting(false);
-        }
-    }
-
     function startEditComment(c: CommentDTO) {
         if (!user) return navigate("/login");
         if (!canEdit(user, c.userId)) return;
-
         setEditCommentId(c.id);
         setEditCommentBody(c.body);
     }
 
     async function saveEditComment() {
         if (!user || !editCommentId) return;
-
         const b = editCommentBody.trim();
         if (!b) return;
 
@@ -237,7 +168,6 @@ export default function CommentsRoute() {
         if (!user) return navigate("/login");
         if (!post) return;
         if (!canEdit(user, post.userId)) return;
-
         setEditPostTitle(post.title);
         setEditPostBody(post.body);
         setEditingPost(true);
@@ -245,7 +175,6 @@ export default function CommentsRoute() {
 
     async function saveEditPost() {
         if (!user || !post) return;
-
         const t = editPostTitle.trim();
         const b = editPostBody.trim();
         if (!t || !b) return;
@@ -271,12 +200,7 @@ export default function CommentsRoute() {
         try {
             setDeletingId(commentId);
             await deleteComment(commentId, user.id);
-
-            setComments((prev) =>
-                prev
-                    .filter((c) => c.id !== commentId)
-                    .map((c) => (c.parentCommentId === commentId ? { ...c, parentCommentId: null } : c))
-            );
+            setComments((prev) => prev.filter((c) => c.id !== commentId));
         } catch (e) {
             setErr(getApiErrorMessage(e));
         } finally {
@@ -289,128 +213,6 @@ export default function CommentsRoute() {
         window.location.hash = `comment-${commentId}`;
         const el = document.getElementById(`comment-${commentId}`);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-
-    function CommentItem({ node, depth }: { node: CommentNode; depth: number }) {
-        const isReplyOpen = replyToId === node.id;
-        const isEditOpen = editCommentId === node.id;
-
-        return (
-            <Box
-                id={`comment-${node.id}`}
-                sx={{
-                    pl: depth === 0 ? 0 : 2,
-                    borderLeft: depth === 0 ? "none" : "1px solid",
-                    borderColor: "divider",
-                    mt: 1.5,
-                }}
-            >
-                <Paper sx={{ p: 2, borderRadius: 3 }}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
-                        <Box sx={{ flex: 1, minWidth: 0 }}>
-                            <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
-                                <Typography fontWeight={800}>
-                                    {node.author?.username ?? `User #${node.userId}`}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                    {fmtDate(node.createdAt)}
-                                </Typography>
-                                {isEdited(node.createdAt, node.updatedAt, node.editedAt) ? (
-                                    <Typography variant="caption" color="text.secondary">
-                                        · Edited
-                                    </Typography>
-                                ) : null}
-                            </Stack>
-
-                            {!isEditOpen ? (
-                                <Typography sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{node.body}</Typography>
-                            ) : (
-                                <Box sx={{ mt: 1 }}>
-                                    <TextField
-                                        fullWidth
-                                        autoFocus
-                                        multiline
-                                        minRows={2}
-                                        value={editCommentBody}
-                                        onChange={(e) => setEditCommentBody(e.target.value)}
-                                    />
-                                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                                        <Button variant="contained" disabled={editCommentSaving} onClick={saveEditComment}>
-                                            {editCommentSaving ? "Saving..." : "Save"}
-                                        </Button>
-                                        <Button disabled={editCommentSaving} onClick={cancelEditComment}>
-                                            Cancel
-                                        </Button>
-                                    </Stack>
-                                </Box>
-                            )}
-
-                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1, flexWrap: "wrap" }}>
-                                <Button size="small" startIcon={<ReplyIcon />} onClick={() => openReply(node.id)}>
-                                    Reply
-                                </Button>
-                                <Button size="small" startIcon={<LinkIcon />} onClick={() => jumpToComment(node.id)}>
-                                    Link
-                                </Button>
-
-                                {canEdit(user, node.userId) ? (
-                                    <Button size="small" startIcon={<EditOutlinedIcon />} onClick={() => startEditComment(node)}>
-                                        Edit
-                                    </Button>
-                                ) : null}
-                            </Stack>
-
-                            <Collapse in={isReplyOpen} unmountOnExit>
-                                <Box sx={{ mt: 1.5 }}>
-                                    <TextField
-                                        fullWidth
-                                        autoFocus
-                                        placeholder="Write a reply…"
-                                        multiline
-                                        minRows={2}
-                                        value={replyBody}
-                                        onChange={(e) => setReplyBody(e.target.value)}
-                                    />
-                                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                                        <Button variant="contained" disabled={replyPosting} onClick={submitReply}>
-                                            {replyPosting ? "Replying..." : "Reply"}
-                                        </Button>
-                                        <Button
-                                            disabled={replyPosting}
-                                            onClick={() => {
-                                                setReplyToId(null);
-                                                setReplyBody("");
-                                            }}
-                                        >
-                                            Cancel
-                                        </Button>
-                                    </Stack>
-                                </Box>
-                            </Collapse>
-                        </Box>
-
-                        {canDelete(user, node.userId) ? (
-                            <IconButton
-                                onClick={() => onDeleteComment(node.id)}
-                                disabled={deletingId === node.id}
-                                size="small"
-                                aria-label="Delete comment"
-                            >
-                                <DeleteOutlineIcon />
-                            </IconButton>
-                        ) : null}
-                    </Stack>
-                </Paper>
-
-                {node.children.length > 0 ? (
-                    <Stack sx={{ mt: 1 }}>
-                        {node.children.map((child) => (
-                            <CommentItem key={child.id} node={child} depth={depth + 1} />
-                        ))}
-                    </Stack>
-                ) : null}
-            </Box>
-        );
     }
 
     return (
@@ -435,7 +237,7 @@ export default function CommentsRoute() {
                                     variant="outlined"
                                     onClick={() => {
                                         logout();
-                                        navigate("/");
+                                        navigate("/", { replace: true });
                                     }}
                                 >
                                     Logout
@@ -443,10 +245,10 @@ export default function CommentsRoute() {
                             </Stack>
                         ) : (
                             <Stack direction="row" spacing={1}>
-                                <Button variant="outlined" onClick={() => navigate("/login")}>
+                                <Button variant="outlined" component={RouterLink} to="/login">
                                     Login
                                 </Button>
-                                <Button variant="contained" onClick={() => navigate("/signup")}>
+                                <Button variant="contained" component={RouterLink} to="/signup">
                                     Sign up
                                 </Button>
                             </Stack>
@@ -457,106 +259,87 @@ export default function CommentsRoute() {
                 </Toolbar>
             </AppBar>
 
-            <Container maxWidth="md" sx={{ py: 4 }}>
-                <Paper sx={{ p: 3, borderRadius: 3, mb: 3 }}>
-                    {loading ? (
-                        <Stack spacing={1}>
-                            <Skeleton width="60%" />
-                            <Skeleton width="90%" />
-                        </Stack>
-                    ) : (
-                        <Stack spacing={1}>
-                            {!editingPost ? (
-                                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
-                                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                                        <Typography variant="h4" fontWeight={900}>
-                                            {post?.title ?? `Post #${postIdNum}`}
-                                        </Typography>
+            <Container maxWidth="md" sx={{ py: 6 }}>
+                {loading ? (
+                    <Stack spacing={2}>
+                        <Skeleton variant="rounded" height={120} />
+                        <Skeleton variant="rounded" height={80} />
+                        <Skeleton variant="rounded" height={72} />
+                        <Skeleton variant="rounded" height={72} />
+                    </Stack>
+                ) : (
+                    <Paper sx={{ p: 3, borderRadius: 3, mb: 3 }}>
+                        {!editingPost ? (
+                            <>
+                                <Typography variant="h5" fontWeight={900}>
+                                    {post?.title ?? `Post #${postIdNum}`}
+                                </Typography>
 
-                                        <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap", mt: 1 }}>
-                                            {post?.body ?? "No content."}
-                                        </Typography>
+                                <Typography sx={{ mt: 1 }}>{post?.body ?? "No content."}</Typography>
 
-                                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1, flexWrap: "wrap" }}>
-                                            <Typography variant="caption" color="text.secondary">
-                                                {post?.author?.username ?? `User #${post?.userId ?? "?"}`}
-                                            </Typography>
-                                            {post?.createdAt ? (
-                                                <Typography variant="caption" color="text.secondary">
-                                                    {fmtDate(post.createdAt)}
-                                                </Typography>
-                                            ) : null}
-                                            {post && isEdited(post.createdAt, post.updatedAt, post.editedAt) ? (
-                                                <Typography variant="caption" color="text.secondary">
-                                                    · Edited
-                                                </Typography>
-                                            ) : null}
-                                        </Stack>
-                                    </Box>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                                    {post?.author?.username ?? `User #${post?.userId ?? "?"}`} •{" "}
+                                    {post?.createdAt ? fmtDate(post.createdAt) : ""}
+                                    {post && isEdited(post.createdAt, post.updatedAt, post.editedAt) ? " · Edited" : ""}
+                                </Typography>
 
-                                    {post && canEdit(user, post.userId) ? (
-                                        <IconButton aria-label="Edit post" onClick={startEditPost}>
-                                            <EditOutlinedIcon />
-                                        </IconButton>
-                                    ) : null}
-                                </Stack>
-                            ) : (
-                                <>
-                                    <Typography variant="h6" fontWeight={900}>
-                                        Edit post
-                                    </Typography>
-
-                                    <TextField
-                                        fullWidth
-                                        label="Title"
-                                        margin="normal"
-                                        value={editPostTitle}
-                                        onChange={(e) => setEditPostTitle(e.target.value)}
-                                    />
-                                    <TextField
-                                        fullWidth
-                                        label="Body"
-                                        margin="normal"
-                                        multiline
-                                        minRows={5}
-                                        value={editPostBody}
-                                        onChange={(e) => setEditPostBody(e.target.value)}
-                                    />
-
-                                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                                        <Button variant="contained" disabled={editPostSaving} onClick={saveEditPost}>
-                                            {editPostSaving ? "Saving..." : "Save"}
-                                        </Button>
-                                        <Button
-                                            disabled={editPostSaving}
-                                            onClick={() => {
-                                                setEditingPost(false);
-                                                if (post) {
-                                                    setEditPostTitle(post.title);
-                                                    setEditPostBody(post.body);
-                                                }
-                                            }}
-                                        >
-                                            Cancel
-                                        </Button>
-                                    </Stack>
-                                </>
-                            )}
-
-                            <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                                {post?.topicId ? (
-                                    <Button variant="text" component={RouterLink} to={`/topics/${post.topicId}`}>
+                                <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                                    <Button
+                                        variant="outlined"
+                                        onClick={() => (post?.topicId ? navigate(`/topics/${post.topicId}`) : navigate("/"))}
+                                    >
                                         ← Back to topic
                                     </Button>
-                                ) : (
-                                    <Button variant="text" component={RouterLink} to="/">
-                                        ← Back
+                                    {post && canEdit(user, post.userId) ? (
+                                        <Button variant="contained" onClick={startEditPost} startIcon={<EditOutlinedIcon />}>
+                                            Edit post
+                                        </Button>
+                                    ) : null}
+                                </Stack>
+                            </>
+                        ) : (
+                            <>
+                                <Typography variant="h6" fontWeight={900}>
+                                    Edit post
+                                </Typography>
+                                <TextField
+                                    fullWidth
+                                    label="Title"
+                                    margin="normal"
+                                    value={editPostTitle}
+                                    onChange={(e) => setEditPostTitle(e.target.value)}
+                                />
+                                <TextField
+                                    fullWidth
+                                    label="Body"
+                                    margin="normal"
+                                    multiline
+                                    minRows={5}
+                                    value={editPostBody}
+                                    onChange={(e) => setEditPostBody(e.target.value)}
+                                />
+                                <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                                    <Button variant="contained" onClick={saveEditPost} disabled={editPostSaving}>
+                                        {editPostSaving ? "Saving..." : "Save"}
                                     </Button>
-                                )}
-                            </Stack>
-                        </Stack>
-                    )}
-                </Paper>
+                                    <Button
+                                        variant="outlined"
+                                        onClick={() => {
+                                            setEditingPost(false);
+                                            if (post) {
+                                                setEditPostTitle(post.title);
+                                                setEditPostBody(post.body);
+                                            }
+                                        }}
+                                        disabled={editPostSaving}
+                                    >
+                                        Cancel
+                                    </Button>
+                                </Stack>
+                            </>
+                        )}
+                    </Paper>
+                )}
 
                 {err && (
                     <Alert severity="error" sx={{ mb: 2 }}>
@@ -568,19 +351,17 @@ export default function CommentsRoute() {
                     <Typography fontWeight={800} sx={{ mb: 1 }}>
                         Add a comment
                     </Typography>
-
                     <TextField
                         fullWidth
-                        placeholder={user ? "Write a comment…" : "Log in to comment…"}
                         multiline
                         minRows={3}
+                        placeholder={user ? "Write something…" : "Login to comment…"}
                         value={newBody}
                         onChange={(e) => setNewBody(e.target.value)}
                         disabled={!mounted || !user}
                     />
-
-                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                        <Button variant="contained" disabled={!mounted || !user || posting} onClick={submitTopLevel}>
+                    <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} alignItems="center">
+                        <Button variant="contained" onClick={submitComment} disabled={!user || posting}>
                             {posting ? "Posting..." : "Comment"}
                         </Button>
                         {!user ? (
@@ -591,26 +372,89 @@ export default function CommentsRoute() {
                     </Stack>
                 </Paper>
 
-                <Divider sx={{ mb: 2 }} />
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                    <Typography variant="h6" fontWeight={800}>
+                        Comments
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        {comments.length} comment{comments.length === 1 ? "" : "s"}
+                    </Typography>
+                </Stack>
 
                 {loading ? (
                     <Stack spacing={2}>
-                        <Skeleton variant="rounded" height={90} />
-                        <Skeleton variant="rounded" height={90} />
-                        <Skeleton variant="rounded" height={90} />
+                        <Skeleton variant="rounded" height={72} />
+                        <Skeleton variant="rounded" height={72} />
+                        <Skeleton variant="rounded" height={72} />
                     </Stack>
-                ) : tree.length === 0 ? (
+                ) : comments.length === 0 ? (
                     <Paper sx={{ p: 3, borderRadius: 3 }}>
-                        <Typography fontWeight={800}>No comments yet</Typography>
+                        <Typography fontWeight={700}>No comments yet</Typography>
                         <Typography variant="body2" color="text.secondary">
                             Be the first to comment.
                         </Typography>
                     </Paper>
                 ) : (
-                    <Stack spacing={1}>
-                        {tree.map((node) => (
-                            <CommentItem key={node.id} node={node} depth={0} />
-                        ))}
+                    <Stack spacing={2}>
+                        {comments.map((c) => {
+                            const isEditOpen = editCommentId === c.id;
+
+                            return (
+                                <Paper key={c.id} id={`comment-${c.id}`} sx={{ p: 2.5, borderRadius: 3 }}>
+                                    <Stack direction="row" justifyContent="space-between" spacing={2}>
+                                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                                            <Typography variant="subtitle2" fontWeight={800}>
+                                                {c.author?.username ?? `User #${c.userId}`} • {fmtDate(c.createdAt)}
+                                                {isEdited(c.createdAt, c.updatedAt, c.editedAt) ? " · Edited" : ""}
+                                            </Typography>
+
+                                            <Divider sx={{ my: 1.25 }} />
+
+                                            {!isEditOpen ? (
+                                                <Typography>{c.body}</Typography>
+                                            ) : (
+                                                <>
+                                                    <TextField
+                                                        fullWidth
+                                                        multiline
+                                                        minRows={3}
+                                                        value={editCommentBody}
+                                                        onChange={(e) => setEditCommentBody(e.target.value)}
+                                                    />
+                                                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                                                        <Button variant="contained" onClick={saveEditComment} disabled={editCommentSaving}>
+                                                            {editCommentSaving ? "Saving..." : "Save"}
+                                                        </Button>
+                                                        <Button variant="outlined" onClick={cancelEditComment} disabled={editCommentSaving}>
+                                                            Cancel
+                                                        </Button>
+                                                    </Stack>
+                                                </>
+                                            )}
+                                        </Box>
+
+                                        <Stack direction="column" spacing={0.5} sx={{ flex: "0 0 auto" }}>
+
+                                            {canEdit(user, c.userId) ? (
+                                                <IconButton onClick={() => startEditComment(c)} aria-label="Edit comment">
+                                                    <EditOutlinedIcon />
+                                                </IconButton>
+                                            ) : null}
+
+                                            {canDelete(user, c.userId) ? (
+                                                <IconButton
+                                                    onClick={() => onDeleteComment(c.id)}
+                                                    disabled={deletingId === c.id}
+                                                    aria-label="Delete comment"
+                                                >
+                                                    <DeleteOutlineIcon />
+                                                </IconButton>
+                                            ) : null}
+                                        </Stack>
+                                    </Stack>
+                                </Paper>
+                            );
+                        })}
                     </Stack>
                 )}
             </Container>

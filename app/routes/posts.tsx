@@ -12,6 +12,7 @@ import {
     DialogContent,
     DialogTitle,
     IconButton,
+    InputAdornment,
     Paper,
     Skeleton,
     Stack,
@@ -22,6 +23,7 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import SearchIcon from "@mui/icons-material/Search";
 
 import { getApiErrorMessage } from "~/lib/api/client";
 import { getTopicFromList, type TopicDTO } from "~/lib/api/topics";
@@ -63,20 +65,28 @@ export default function TopicPostsRoute() {
     const { topicId } = useParams();
     const navigate = useNavigate();
     const topicIdNum = useMemo(() => Number(topicId), [topicId]);
-
     const { mounted, user, logout } = useAuthUser();
 
     const [topic, setTopic] = useState<TopicDTO | null>(null);
     const [posts, setPosts] = useState<PostDTO[]>([]);
-    const [loading, setLoading] = useState(true);
+
+    const [topicLoading, setTopicLoading] = useState(true);
+    const [postsLoading, setPostsLoading] = useState(true);
+    const loading = topicLoading || postsLoading;
+
     const [err, setErr] = useState<string | null>(null);
 
+    // Search query for posts
+    const [query, setQuery] = useState("");
+
+    // Create dialog state
     const [openCreate, setOpenCreate] = useState(false);
     const [newTitle, setNewTitle] = useState("");
     const [newBody, setNewBody] = useState("");
     const [saving, setSaving] = useState(false);
     const [saveErr, setSaveErr] = useState<string | null>(null);
 
+    // Edit dialog state
     const [openEdit, setOpenEdit] = useState(false);
     const [editId, setEditId] = useState<number | null>(null);
     const [editTitle, setEditTitle] = useState("");
@@ -86,42 +96,64 @@ export default function TopicPostsRoute() {
 
     const [deletingId, setDeletingId] = useState<number | null>(null);
 
+    // Fetch topic once
     useEffect(() => {
         if (!topicIdNum || Number.isNaN(topicIdNum)) {
             setErr("Invalid topic id.");
-            setLoading(false);
+            setTopicLoading(false);
+            setPostsLoading(false);
             return;
         }
 
         let alive = true;
 
-        async function run() {
+        (async () => {
             try {
-                setLoading(true);
+                setTopicLoading(true);
                 setErr(null);
-
-                const [t, p] = await Promise.all([
-                    getTopicFromList(topicIdNum),
-                    listPostsByTopic(topicIdNum),
-                ]);
-
+                const t = await getTopicFromList(topicIdNum);
                 if (!alive) return;
                 setTopic(t);
+            } catch (e) {
+                if (!alive) return;
+                setErr(getApiErrorMessage(e));
+            } finally {
+                if (!alive) return;
+                setTopicLoading(false);
+            }
+        })();
+
+        return () => {
+            alive = false;
+        };
+    }, [topicIdNum]);
+
+    // Fetch posts whenever query changes (debounced)
+    useEffect(() => {
+        if (!topicIdNum || Number.isNaN(topicIdNum)) return;
+
+        let alive = true;
+        const handle = setTimeout(async () => {
+            try {
+                setPostsLoading(true);
+                setErr(null);
+                const p = await listPostsByTopic(topicIdNum, query); // ✅ calls backend with ?q=
+                if (!alive) return;
                 setPosts(p);
             } catch (e) {
                 if (!alive) return;
                 setErr(getApiErrorMessage(e));
             } finally {
                 if (!alive) return;
-                setLoading(false);
+                setPostsLoading(false);
             }
-        }
+        }, 250);
 
-        run();
         return () => {
             alive = false;
+            clearTimeout(handle);
         };
-    }, [topicIdNum]);
+    }, [topicIdNum, query]);
 
     function onClickAddPost() {
         if (!user) return navigate("/login");
@@ -145,13 +177,18 @@ export default function TopicPostsRoute() {
             setSaving(true);
             setSaveErr(null);
 
-            const created = await createPost(topicIdNum, { userId: user.id, title: t, body: b });
-            setPosts((prev) => [created, ...prev]);
+            await createPost(topicIdNum, { userId: user.id, title: t, body: b });
             setOpenCreate(false);
+
+            // Refresh list based on current query
+            setPostsLoading(true);
+            const p = await listPostsByTopic(topicIdNum, query);
+            setPosts(p);
         } catch (e) {
             setSaveErr(getApiErrorMessage(e));
         } finally {
             setSaving(false);
+            setPostsLoading(false);
         }
     }
 
@@ -180,13 +217,18 @@ export default function TopicPostsRoute() {
             setEditSaving(true);
             setEditErr(null);
 
-            const updated = await patchPost(editId, { userId: user.id, title: t, body: b });
-            setPosts((prev) => prev.map((x) => (x.id === editId ? updated : x)));
+            await patchPost(editId, { userId: user.id, title: t, body: b });
             setOpenEdit(false);
+
+            // Refresh list based on current query (edits can affect search results)
+            setPostsLoading(true);
+            const p = await listPostsByTopic(topicIdNum, query);
+            setPosts(p);
         } catch (e) {
             setEditErr(getApiErrorMessage(e));
         } finally {
             setEditSaving(false);
+            setPostsLoading(false);
         }
     }
 
@@ -206,6 +248,8 @@ export default function TopicPostsRoute() {
             setDeletingId(null);
         }
     }
+
+    const isSearching = query.trim().length > 0;
 
     return (
         <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
@@ -229,7 +273,7 @@ export default function TopicPostsRoute() {
                                     variant="outlined"
                                     onClick={() => {
                                         logout();
-                                        navigate("/");
+                                        navigate("/", { replace: true });
                                     }}
                                 >
                                     Logout
@@ -251,122 +295,148 @@ export default function TopicPostsRoute() {
                 </Toolbar>
             </AppBar>
 
-            <Container maxWidth="md" sx={{ py: 4 }}>
-                <Paper sx={{ p: 3, borderRadius: 3, mb: 3 }}>
-                    {loading ? (
-                        <Stack spacing={1}>
-                            <Skeleton width="60%" />
-                            <Skeleton width="90%" />
-                        </Stack>
-                    ) : (
-                        <Stack spacing={1}>
-                            <Typography variant="h4" fontWeight={900}>
-                                {topic?.title ?? `Topic #${topicIdNum}`}
-                            </Typography>
-                            <Typography color="text.secondary">
-                                {topic?.description ?? "No description."}
-                            </Typography>
-
-                            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 1 }}>
-                                <Button variant="text" component={RouterLink} to="/">
-                                    ← Back to topics
-                                </Button>
-
-                                <Button variant="contained" startIcon={<AddIcon />} onClick={onClickAddPost}>
-                                    Add post
-                                </Button>
-                            </Stack>
-                        </Stack>
-                    )}
-                </Paper>
-
-                {err && (
-                    <Alert severity="error" sx={{ mb: 2 }}>
-                        {err}
-                    </Alert>
-                )}
-
+            <Container maxWidth="md" sx={{ py: 6 }}>
                 {loading ? (
                     <Stack spacing={2}>
-                        <Skeleton variant="rounded" height={80} />
-                        <Skeleton variant="rounded" height={80} />
-                        <Skeleton variant="rounded" height={80} />
+                        <Skeleton variant="rounded" height={40} />
+                        <Skeleton variant="rounded" height={20} />
+                        <Skeleton variant="rounded" height={72} />
+                        <Skeleton variant="rounded" height={72} />
                     </Stack>
-                ) : posts.length === 0 ? (
-                    <Paper sx={{ p: 3, borderRadius: 3 }}>
-                        <Typography fontWeight={700}>No posts yet</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                            Be the first to post in this topic.
-                        </Typography>
-                    </Paper>
                 ) : (
-                    <Stack spacing={2}>
-                        {posts.map((p) => (
-                            <Paper
-                                key={p.id}
-                                sx={{ p: 2.5, borderRadius: 3, cursor: "pointer", "&:hover": { boxShadow: 2 } }}
-                                onClick={() => navigate(`/posts/${p.id}`)}
-                            >
-                                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
-                                    <Box sx={{ minWidth: 0, flex: 1 }}>
-                                        <Typography variant="h6" fontWeight={800} noWrap>
-                                            {p.title}
-                                        </Typography>
+                    <>
+                        <Typography variant="h4" fontWeight={900} sx={{ mb: 1 }}>
+                            {topic?.title ?? `Topic #${topicIdNum}`}
+                        </Typography>
+                        <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                            {topic?.description ?? "No description."}
+                        </Typography>
 
-                                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5, flexWrap: "wrap" }}>
-                                            <Typography variant="caption" color="text.secondary">
-                                                {p.author?.username ?? `User #${p.userId}`}
-                                            </Typography>
-                                            <Typography variant="caption" color="text.secondary">
-                                                {fmtDate(p.createdAt)}
-                                            </Typography>
-                                            {isEdited(p.createdAt, p.updatedAt, p.editedAt) ? (
-                                                <Typography variant="caption" color="text.secondary">
-                                                    · Edited
-                                                </Typography>
-                                            ) : null}
-                                        </Stack>
+                        <Stack direction="row" spacing={1} sx={{ mb: 3 }}>
+                            <Button variant="text" onClick={() => navigate("/")}>
+                                ← Back to topics
+                            </Button>
+                        </Stack>
 
-                                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                            {p.body.length > 160 ? p.body.slice(0, 160) + "…" : p.body}
-                                        </Typography>
-                                    </Box>
+                        {/* Search + Add */}
+                        <Paper elevation={0} sx={{ p: 1.5, borderRadius: 3, mb: 3 }}>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                                <TextField
+                                    fullWidth
+                                    placeholder="Search posts…"
+                                    value={query}
+                                    onChange={(e) => setQuery(e.target.value)}
+                                    InputProps={{
+                                        startAdornment: (
+                                            <InputAdornment position="start">
+                                                <SearchIcon />
+                                            </InputAdornment>
+                                        ),
+                                    }}
+                                />
+                                <IconButton
+                                    onClick={onClickAddPost}
+                                    color="primary"
+                                    sx={{ borderRadius: 2, width: 48, height: 48, flex: "0 0 auto" }}
+                                    aria-label="Add post"
+                                >
+                                    <AddIcon />
+                                </IconButton>
+                            </Stack>
+                        </Paper>
 
-                                    <Stack direction="row" spacing={0.5}>
-                                        {canEdit(user, p.userId) ? (
-                                            <IconButton
-                                                size="small"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    onOpenEdit(p);
-                                                }}
-                                                aria-label="Edit post"
-                                            >
-                                                <EditOutlinedIcon />
-                                            </IconButton>
-                                        ) : null}
+                        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                            <Typography variant="h6" fontWeight={800}>
+                                Posts
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                                {posts.length} post{posts.length === 1 ? "" : "s"}
+                            </Typography>
+                        </Stack>
 
-                                        {canDelete(user, p.userId) ? (
-                                            <IconButton
-                                                size="small"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    onDeletePost(p.id);
-                                                }}
-                                                disabled={deletingId === p.id}
-                                                aria-label="Delete post"
-                                            >
-                                                <DeleteOutlineIcon />
-                                            </IconButton>
-                                        ) : null}
-                                    </Stack>
-                                </Stack>
+                        {err && (
+                            <Alert severity="error" sx={{ mb: 2 }}>
+                                {err}
+                            </Alert>
+                        )}
+
+                        {postsLoading ? (
+                            <Stack spacing={2}>
+                                <Skeleton variant="rounded" height={72} />
+                                <Skeleton variant="rounded" height={72} />
+                                <Skeleton variant="rounded" height={72} />
+                            </Stack>
+                        ) : posts.length === 0 ? (
+                            <Paper sx={{ p: 3, borderRadius: 3 }}>
+                                <Typography fontWeight={800}>
+                                    {isSearching ? "No matches" : "No posts yet"}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                    {isSearching
+                                        ? "Try a different keyword."
+                                        : "Be the first to post in this topic."}
+                                </Typography>
                             </Paper>
-                        ))}
-                    </Stack>
+                        ) : (
+                            <Stack spacing={2}>
+                                {posts.map((p) => (
+                                    <Paper
+                                        key={p.id}
+                                        sx={{ p: 2.5, borderRadius: 3, cursor: "pointer", "&:hover": { boxShadow: 2 } }}
+                                        onClick={() => navigate(`/posts/${p.id}`)}
+                                    >
+                                        <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+                                            <Box sx={{ pr: 2, flex: 1 }}>
+                                                <Typography variant="h6" fontWeight={800} sx={{ mb: 0.5 }}>
+                                                    {p.title}
+                                                </Typography>
+
+                                                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                                                    {p.author?.username ?? `User #${p.userId}`} • {fmtDate(p.createdAt)}
+                                                    {isEdited(p.createdAt, p.updatedAt, p.editedAt) ? " · Edited" : ""}
+                                                </Typography>
+
+                                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                                    {p.body.length > 160 ? p.body.slice(0, 160) + "…" : p.body}
+                                                </Typography>
+                                            </Box>
+
+                                            <Stack direction="row" spacing={0.5}>
+                                                {canEdit(user, p.userId) ? (
+                                                    <IconButton
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            onOpenEdit(p);
+                                                        }}
+                                                        aria-label="Edit post"
+                                                    >
+                                                        <EditOutlinedIcon />
+                                                    </IconButton>
+                                                ) : null}
+
+                                                {canDelete(user, p.userId) ? (
+                                                    <IconButton
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            onDeletePost(p.id);
+                                                        }}
+                                                        disabled={deletingId === p.id}
+                                                        aria-label="Delete post"
+                                                    >
+                                                        <DeleteOutlineIcon />
+                                                    </IconButton>
+                                                ) : null}
+                                            </Stack>
+                                        </Stack>
+                                    </Paper>
+                                ))}
+                            </Stack>
+                        )}
+                    </>
                 )}
             </Container>
 
+            {/* Create Post Dialog */}
             <Dialog open={openCreate} onClose={() => setOpenCreate(false)} fullWidth maxWidth="sm" keepMounted>
                 <DialogTitle>Create a post</DialogTitle>
                 <DialogContent>
@@ -388,7 +458,7 @@ export default function TopicPostsRoute() {
                         label="Body"
                         margin="normal"
                         multiline
-                        minRows={5}
+                        minRows={4}
                         value={newBody}
                         onChange={(e) => setNewBody(e.target.value)}
                     />
@@ -403,6 +473,7 @@ export default function TopicPostsRoute() {
                 </DialogActions>
             </Dialog>
 
+            {/* Edit Post Dialog */}
             <Dialog open={openEdit} onClose={() => setOpenEdit(false)} fullWidth maxWidth="sm" keepMounted>
                 <DialogTitle>Edit post</DialogTitle>
                 <DialogContent>
@@ -424,7 +495,7 @@ export default function TopicPostsRoute() {
                         label="Body"
                         margin="normal"
                         multiline
-                        minRows={5}
+                        minRows={4}
                         value={editBody}
                         onChange={(e) => setEditBody(e.target.value)}
                     />
