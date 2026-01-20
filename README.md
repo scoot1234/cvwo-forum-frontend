@@ -144,21 +144,6 @@ After building:
 npm run start
 ```
 
----
-
-## Docker (Optional)
-
-Build and run with Docker:
-
-```bash
-docker build -t cvwo-forum-frontend .
-docker run -p 3000:3000 -e VITE_API_BASE_URL=http://host.docker.internal:8080 cvwo-forum-frontend
-```
-
-> Adjust ports/host as needed depending on where your backend is running.
-
----
-
 ## Notes
 
 - Auth state is stored in `localStorage` (so refresh keeps you logged in).
